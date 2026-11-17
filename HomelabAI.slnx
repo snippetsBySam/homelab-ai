@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/HomelabAI.Cli/HomelabAI.Cli.csproj" Id="1e44e706-ed9c-4846-a366-cb5fef686091" />
+    <Project Path="src/HomelabAI.Core/HomelabAI.Core.csproj" Id="a4f048d0-d4a2-4588-af0f-b66f0bd4d6d1" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/HomelabAI.Tests/HomelabAI.Tests.csproj" Id="05a01a7d-3892-46c1-99db-e5b9670e6b0e" />
+  </Folder>
+</Solution>
