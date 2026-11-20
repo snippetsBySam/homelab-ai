@@ -1,68 +1,122 @@
-﻿using HomelabAI.Core.Abstractions;
+﻿using HomelabAI.Cli.Configuration;
+using HomelabAI.Core.Abstractions;
 using HomelabAI.Core.OpenAICompatible;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 
-const string endpoint = "http://evox2server:8080/v1/";
-const string model = "qwen3.8-27b-q8";
+var builder = Host.CreateApplicationBuilder(
+    new HostApplicationBuilderSettings
+    {
+        Args = args,
+        ContentRootPath = AppContext.BaseDirectory
+    });
 
-using var httpClient = new HttpClient
+var services = builder.Services;
+var configs = builder.Configuration;
+
+services
+    .AddOptions<LlmOptions>()
+    .Bind(configs.GetSection(
+        LlmOptions.SectionName))
+    .Validate(
+        options => options.BaseUrl is
+        {
+            IsAbsoluteUri: true,
+            Scheme: "http" or "https"
+        },
+        "A valid HTTP(S) base URL is required.")
+    .Validate(
+        options => options.BaseUrl?.AbsolutePath.EndsWith(
+            "/v1/", StringComparison.Ordinal) == true,
+        "Llm:BaseUrl must end with /v1/.")
+    .Validate(
+        options => !string.IsNullOrWhiteSpace(options.Model),
+        "Llm:Model must be configured.")
+    .Validate(
+        options => options.Timeout > TimeSpan.Zero,
+        "Llm:Timeout must be positive.")
+    .ValidateOnStart();
+
+services.AddHttpClient<
+    ILlmClient,
+    OpenAICompatibleClient>((provider, client) =>
 {
-    BaseAddress = new Uri(endpoint),
-    Timeout = TimeSpan.FromSeconds(10)
-};
+    var options = provider
+        .GetRequiredService<IOptions<LlmOptions>>()
+        .Value;
 
-ILlmClient llmClient = new OpenAICompatibleClient(httpClient);
+    client.BaseAddress = options.BaseUrl;
+    client.Timeout = options.Timeout;
+});
 
-Console.Write("Prompt: ");
+using var host = builder.Build();
 
-var prompt = Console.ReadLine();
-
-if (string.IsNullOrWhiteSpace(prompt))
-{
-    Console.WriteLine("No Prompt Provided.");
-    return;
-}
-
-using var cts = new CancellationTokenSource();
-
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    cts.Cancel();
-};
-
-var stopwatch = Stopwatch.StartNew();
+await host.StartAsync();
 
 try
 {
-    Console.WriteLine("\nGenerating...\n");
+    var client = host.Services
+        .GetRequiredService<ILlmClient>();
 
-    var result = await llmClient.ChatAsync(
-        model, prompt, cts.Token);
+    var options = host.Services
+        .GetRequiredService<IOptions<LlmOptions>>()
+        .Value;
 
-    stopwatch.Stop();
+    Console.Write("Prompt: ");
+    var prompt = Console.ReadLine();
 
-    Console.WriteLine(result.Content);
-
-    Console.WriteLine("\n--- Metrics ---");
-    Console.WriteLine($"Model: {result.Model}");
-    Console.WriteLine($"Duration: {stopwatch.Elapsed.TotalSeconds:F2}s");
-    Console.WriteLine($"Finish reason: {result.FinishReason}");
-
-    if (result.Usage is { } usage)
+    if (!string.IsNullOrWhiteSpace(prompt))
     {
-        Console.WriteLine($"Prompt tokens: {usage.PromptTokens}");
-        Console.WriteLine(
-            $"Completion tokens: {usage.CompletionTokens}");
-        Console.WriteLine($"Total tokens: {usage.TotalTokens}");
+        using var cts = new CancellationTokenSource();
+
+        ConsoleCancelEventHandler handler = (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        Console.CancelKeyPress += handler;
+
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            var result = await client.ChatAsync(
+                options.Model,
+                prompt,
+                cts.Token);
+
+            stopwatch.Stop();
+
+            Console.WriteLine($"\n{result.Content}");
+            Console.WriteLine(
+                $"\nDuration: {stopwatch.Elapsed.TotalSeconds:F2}s");
+            Console.WriteLine($"Model: {result.Model}");
+            Console.WriteLine($"Finish reason: {result.FinishReason}");
+
+            if (result.Usage is { } usage)
+            {
+                Console.WriteLine(
+                    $"Prompt tokens: {usage.PromptTokens}");
+                Console.WriteLine(
+                    $"Completion tokens: {usage.CompletionTokens}");
+            }
+        }
+        catch (OperationCanceledException)
+            when (cts.IsCancellationRequested)
+        {
+            Console.WriteLine("Request cancelled");
+        }
+        finally
+        {
+            Console.CancelKeyPress -= handler;
+        }
     }
 }
-catch (OperationCanceledException) when (cts.IsCancellationRequested)
+finally
 {
-    Console.WriteLine("Request cancelled.");
-}
-catch (HttpRequestException ex)
-{
-    Console.Error.WriteLine(
-        $"HTTP request failed: {ex.Message}");
+
+    await host.StopAsync();
 }
